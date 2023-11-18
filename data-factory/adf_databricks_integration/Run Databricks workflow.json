@@ -1,0 +1,313 @@
+{
+	"name": "Run Databricks workflow",
+	"properties": {
+		"description": "The pipeline has 3 return values:\njob_run_id - the ID of the job returned by the Databricks REST API. It's provided for convenience.\njob_run_metadata - includes all the metadata about the job run.\njob_run_output - enables passing the information from a task within the job back to the calling Azure Data Factory pipeline. It includes the content returned by dbutils.notebook.exit() function.",
+		"activities": [
+			{
+				"name": "Trigger a new job run",
+				"type": "WebActivity",
+				"dependsOn": [],
+				"policy": {
+					"timeout": "0.12:00:00",
+					"retry": 0,
+					"retryIntervalInSeconds": 30,
+					"secureOutput": false,
+					"secureInput": false
+				},
+				"userProperties": [],
+				"typeProperties": {
+					"url": {
+						"value": "@concat(pipeline().parameters.databricks_instance_name, '/api/2.1/jobs/run-now')",
+						"type": "Expression"
+					},
+					"method": "POST",
+					"body": {
+						"value": "{\"job_id\": @{pipeline().parameters.job_id},\"idempotency_token\": \"@{pipeline().RunId}\",\"job_parameters\": @{pipeline().parameters.job_parameters}}",
+						"type": "Expression"
+					},
+					"authentication": {
+						"type": "MSI",
+						"resource": "2ff814a6-3304-4ab8-85cb-cd0e6f879c1d"
+					}
+				}
+			},
+			{
+				"name": "Retrieve the metadata of the job run until termination",
+				"type": "Until",
+				"dependsOn": [
+					{
+						"activity": "Trigger a new job run",
+						"dependencyConditions": [
+							"Succeeded"
+						]
+					}
+				],
+				"userProperties": [],
+				"typeProperties": {
+					"expression": {
+						"value": "@variables('job_run_has_result_state')",
+						"type": "Expression"
+					},
+					"activities": [
+						{
+							"name": "Retrieve the metadata of the job run",
+							"type": "WebActivity",
+							"dependsOn": [],
+							"policy": {
+								"timeout": "0.12:00:00",
+								"retry": 0,
+								"retryIntervalInSeconds": 30,
+								"secureOutput": false,
+								"secureInput": false
+							},
+							"userProperties": [],
+							"typeProperties": {
+								"url": {
+									"value": "@concat(pipeline().parameters.databricks_instance_name, '/api/2.1/jobs/runs/get?run_id=', activity('Trigger a new job run').output.run_id)",
+									"type": "Expression"
+								},
+								"method": "GET",
+								"body": "",
+								"authentication": {
+									"type": "MSI",
+									"resource": "2ff814a6-3304-4ab8-85cb-cd0e6f879c1d"
+								}
+							}
+						},
+						{
+							"name": "Check if the job run has result_state",
+							"type": "IfCondition",
+							"dependsOn": [
+								{
+									"activity": "Update job_run_result_state",
+									"dependencyConditions": [
+										"Succeeded"
+									]
+								}
+							],
+							"userProperties": [],
+							"typeProperties": {
+								"expression": {
+									"value": "@variables('job_run_has_result_state')",
+									"type": "Expression"
+								},
+								"ifFalseActivities": [
+									{
+										"name": "Wait before the next job run metadata retrieval",
+										"type": "Wait",
+										"dependsOn": [],
+										"userProperties": [],
+										"typeProperties": {
+											"waitTimeInSeconds": {
+												"value": "@pipeline().parameters.job_run_metadata_retrieval_interval_seconds",
+												"type": "Expression"
+											}
+										}
+									}
+								]
+							}
+						},
+						{
+							"name": "Update job_run_result_state",
+							"type": "SetVariable",
+							"dependsOn": [
+								{
+									"activity": "Retrieve the metadata of the job run",
+									"dependencyConditions": [
+										"Succeeded"
+									]
+								}
+							],
+							"policy": {
+								"secureOutput": false,
+								"secureInput": false
+							},
+							"userProperties": [],
+							"typeProperties": {
+								"variableName": "job_run_has_result_state",
+								"value": {
+									"value": "@contains(activity('Retrieve the metadata of the job run').output.state, 'result_state')",
+									"type": "Expression"
+								}
+							}
+						}
+					],
+					"timeout": "0.12:00:00"
+				}
+			},
+			{
+				"name": "Check whether the job run succeeded",
+				"type": "IfCondition",
+				"dependsOn": [
+					{
+						"activity": "Return job run metadata from the pipeline_copy1",
+						"dependencyConditions": [
+							"Succeeded"
+						]
+					}
+				],
+				"userProperties": [],
+				"typeProperties": {
+					"expression": {
+						"value": "@or(equals(activity('Retrieve the metadata of the job run').output.state.result_state, 'SUCCESS'),equals(activity('Retrieve the metadata of the job run').output.state.result_state, 'SUCCESS_WITH_FAILURES'))",
+						"type": "Expression"
+					},
+					"ifFalseActivities": [
+						{
+							"name": "The job run failed",
+							"type": "Fail",
+							"dependsOn": [],
+							"userProperties": [],
+							"typeProperties": {
+								"message": {
+									"value": "@activity('Retrieve the metadata of the job run').output.state.state_message",
+									"type": "Expression"
+								},
+								"errorCode": "-1"
+							}
+						}
+					]
+				}
+			},
+			{
+				"name": "Retrieve the output of job tasks",
+				"type": "ForEach",
+				"dependsOn": [
+					{
+						"activity": "Retrieve the metadata of the job run until termination",
+						"dependencyConditions": [
+							"Succeeded"
+						]
+					}
+				],
+				"userProperties": [],
+				"typeProperties": {
+					"items": {
+						"value": "@activity('Retrieve the metadata of the job run').output.tasks",
+						"type": "Expression"
+					},
+					"activities": [
+						{
+							"name": "Retrieve the output of the task run",
+							"type": "WebActivity",
+							"dependsOn": [],
+							"policy": {
+								"timeout": "0.12:00:00",
+								"retry": 0,
+								"retryIntervalInSeconds": 30,
+								"secureOutput": false,
+								"secureInput": false
+							},
+							"userProperties": [],
+							"typeProperties": {
+								"url": {
+									"value": "@concat(pipeline().parameters.databricks_instance_name, '/api/2.1/jobs/runs/get-output?run_id=', item().run_id)",
+									"type": "Expression"
+								},
+								"method": "GET",
+								"body": "",
+								"authentication": {
+									"type": "MSI",
+									"resource": "2ff814a6-3304-4ab8-85cb-cd0e6f879c1d"
+								}
+							}
+						},
+						{
+							"name": "Append task output",
+							"type": "AppendVariable",
+							"dependsOn": [
+								{
+									"activity": "Retrieve the output of the task run",
+									"dependencyConditions": [
+										"Succeeded"
+									]
+								}
+							],
+							"userProperties": [],
+							"typeProperties": {
+								"variableName": "tasks_output",
+								"value": {
+									"value": "@activity('Retrieve the output of the task run').output",
+									"type": "Expression"
+								}
+							}
+						}
+					]
+				}
+			},
+			{
+				"name": "Return job run metadata from the pipeline_copy1",
+				"type": "SetVariable",
+				"dependsOn": [
+					{
+						"activity": "Retrieve the output of job tasks",
+						"dependencyConditions": [
+							"Succeeded"
+						]
+					}
+				],
+				"policy": {
+					"secureOutput": false,
+					"secureInput": false
+				},
+				"userProperties": [],
+				"typeProperties": {
+					"variableName": "pipelineReturnValue",
+					"value": [
+						{
+							"key": "job_run_metadata",
+							"value": {
+								"type": "Expression",
+								"content": "@string(activity('Retrieve the metadata of the job run').output)"
+							}
+						},
+						{
+							"key": "job_run_id",
+							"value": {
+								"type": "Expression",
+								"content": "@activity('Trigger a new job run').output.run_id"
+							}
+						},
+						{
+							"key": "job_run_output",
+							"value": {
+								"type": "Expression",
+								"content": "@variables('tasks_output')"
+							}
+						}
+					],
+					"setSystemVariable": true
+				}
+			}
+		],
+		"parameters": {
+			"databricks_instance_name": {
+				"type": "string",
+				"defaultValue": "https://adb-<workspace-id>.<random-number>.azuredatabricks.net"
+			},
+			"job_id": {
+				"type": "int"
+			},
+			"job_parameters": {
+				"type": "string"
+			},
+			"job_run_metadata_retrieval_interval_seconds": {
+				"type": "int",
+				"defaultValue": 15
+			}
+		},
+		"variables": {
+			"job_run_has_result_state": {
+				"type": "Boolean",
+				"defaultValue": false
+			},
+			"tasks_output": {
+				"type": "Array"
+			}
+		},
+		"folder": {
+			"name": "Datarbicks"
+		},
+		"annotations": []
+	}
+}

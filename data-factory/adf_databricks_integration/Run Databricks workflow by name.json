@@ -1,0 +1,165 @@
+{
+	"name": "Run Databricks workflow by name",
+	"properties": {
+		"description": "The pipeline has 3 return values:\njob_run_id - the ID of the job returned by the Databricks REST API. It's provided for convenience.\njob_run_metadata - includes all the metadata about the job run.\njob_run_output - enables passing the information from a task within the job back to the calling Azure Data Factory pipeline. It includes the content returned by dbutils.notebook.exit() function.",
+		"activities": [
+			{
+				"name": "Get ID of the job by listing jobs with name filter",
+				"type": "WebActivity",
+				"dependsOn": [],
+				"policy": {
+					"timeout": "0.12:00:00",
+					"retry": 0,
+					"retryIntervalInSeconds": 30,
+					"secureOutput": false,
+					"secureInput": false
+				},
+				"userProperties": [],
+				"typeProperties": {
+					"url": {
+						"value": "@concat(pipeline().parameters.databricks_instance_name, '/api/2.1/jobs/list?limit=2&name=', pipeline().parameters.job_name)",
+						"type": "Expression"
+					},
+					"method": "GET",
+					"authentication": {
+						"type": "MSI",
+						"resource": "2ff814a6-3304-4ab8-85cb-cd0e6f879c1d"
+					}
+				}
+			},
+			{
+				"name": "Check whether the only one job with such name exists",
+				"type": "IfCondition",
+				"dependsOn": [
+					{
+						"activity": "Get ID of the job by listing jobs with name filter",
+						"dependencyConditions": [
+							"Succeeded"
+						]
+					}
+				],
+				"userProperties": [],
+				"typeProperties": {
+					"expression": {
+						"value": "@equals(length(activity('Get ID of the job by listing jobs with name filter').output.jobs), 1)",
+						"type": "Expression"
+					},
+					"ifFalseActivities": [
+						{
+							"name": "Fail because there is ambiguity",
+							"type": "Fail",
+							"dependsOn": [],
+							"userProperties": [],
+							"typeProperties": {
+								"message": "More than 1 job with such name found",
+								"errorCode": "-2"
+							}
+						}
+					],
+					"ifTrueActivities": [
+						{
+							"name": "Run Databricks job by ID",
+							"type": "ExecutePipeline",
+							"dependsOn": [],
+							"userProperties": [],
+							"typeProperties": {
+								"pipeline": {
+									"referenceName": "Run Databricks workflow",
+									"type": "PipelineReference"
+								},
+								"waitOnCompletion": true,
+								"parameters": {
+									"databricks_instance_name": {
+										"value": "@pipeline().parameters.databricks_instance_name",
+										"type": "Expression"
+									},
+									"job_id": {
+										"value": "@activity('Get ID of the job by listing jobs with name filter').output.jobs[0].job_id",
+										"type": "Expression"
+									},
+									"job_parameters": {
+										"value": "@pipeline().parameters.job_parameters",
+										"type": "Expression"
+									},
+									"job_run_metadata_retrieval_interval_seconds": {
+										"value": "@pipeline().parameters.job_run_metadata_retrieval_interval_seconds",
+										"type": "Expression"
+									}
+								}
+							}
+						},
+						{
+							"name": "Return job run metadata",
+							"type": "SetVariable",
+							"dependsOn": [
+								{
+									"activity": "Run Databricks job by ID",
+									"dependencyConditions": [
+										"Succeeded"
+									]
+								}
+							],
+							"policy": {
+								"secureOutput": false,
+								"secureInput": false
+							},
+							"userProperties": [],
+							"typeProperties": {
+								"variableName": "pipelineReturnValue",
+								"value": [
+									{
+										"key": "job_run_output",
+										"value": {
+											"type": "Expression",
+											"content": "@activity('Run Databricks job by ID').output.pipelineReturnValue.job_run_output"
+										}
+									},
+									{
+										"key": "job_run_metadata",
+										"value": {
+											"type": "Expression",
+											"content": "@activity('Run Databricks job by ID').output.pipelineReturnValue.job_run_metadata"
+										}
+									},
+									{
+										"key": "job_run_id",
+										"value": {
+											"type": "Expression",
+											"content": "@activity('Run Databricks job by ID').output.pipelineReturnValue.job_run_id"
+										}
+									}
+								],
+								"setSystemVariable": true
+							}
+						}
+					]
+				}
+			}
+		],
+		"parameters": {
+			"databricks_instance_name": {
+				"type": "string",
+				"defaultValue": "https://adb-<workspace-id>.<random-number>.azuredatabricks.net"
+			},
+			"job_name": {
+				"type": "string"
+			},
+			"job_parameters": {
+				"type": "string"
+			},
+			"job_run_metadata_retrieval_interval_seconds": {
+				"type": "int",
+				"defaultValue": 15
+			}
+		},
+		"variables": {
+			"all_jobs_are_fetched": {
+				"type": "Boolean"
+			}
+		},
+		"folder": {
+			"name": "Datarbicks"
+		},
+		"annotations": []
+	}
+}

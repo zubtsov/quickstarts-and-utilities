@@ -1,0 +1,15 @@
+# Authenticate with a shared secret https://learn.microsoft.com/en-us/entra/identity-platform/v2-oauth2-client-creds-grant-flow#first-case-access-token-request-with-a-shared-secret
+POST https://login.microsoftonline.com/{{tenantId}}/oauth2/v2.0/token
+Content-Type: application/x-www-form-urlencoded
+
+
+client_id = {{clientId}} &
+scope = https://management.azure.com/.default &
+client_secret={{clientSecret}} &
+grant_type=client_credentials
+
+# Save access token for future requests
+> {%
+    client.log('Got access token: ', response.body.access_token);
+    client.global.set("bearer-token", response.body.access_token);
+%}

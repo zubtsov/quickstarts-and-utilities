@@ -1,0 +1,3 @@
+### List all subscriptions
+GET https://management.azure.com/subscriptions?api-version=2022-12-01
+Authorization: Bearer {{bearer-token}}

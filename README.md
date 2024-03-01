@@ -1,1 +1,1 @@
-# azure-examples
+# This repository contains useful scripts, templates, and project skeletons.
